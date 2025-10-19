@@ -250,7 +250,7 @@
             outline: none;
             -webkit-appearance: none; 
             appearance: none;
-            background: linear-gradient(to right, #8a2be2 0%, #00c4ff 30%, rgba(255,255,255,0.2) 30%, rgba(255,255,255,0.2) 100%); /* 初始漸變 */
+            /* 初始背景由JS設定 */
         }
         /* 針對 Webkit 瀏覽器 (Chrome, Safari) 的滑桿軌道 */
         #music-volume-slider::-webkit-slider-runnable-track {
@@ -685,7 +685,7 @@
                 // Game State Variables
                 this.canvasWidth = 0;
                 this.canvasHeight = 400; // 固定高度
-                this.gameState = 'ready'; // 'ready', 'playing', 'win', 'lose'
+                this.gameState = 'loading'; // 'loading', 'ready', 'playing', 'win', 'lose'
                 this.gameObjects = [];
                 this.score = 0; // Total accumulated score
                 this.currentLevelScore = 0; // Score for the current level
@@ -713,7 +713,7 @@
             // --- Initialization and Asset Loading ---
             async init() {
                 this.setupEventListeners();
-                this.resizeCanvas(); // Initial resize
+                // resizeCanvas will be called after gameWrapper is visible in postLoadSetup
                 window.addEventListener('resize', () => this.resizeCanvas());
 
                 // Load Font Awesome
@@ -728,7 +728,6 @@
 
                 // Load Mascot Image (just check existence)
                 const mascotImg = document.getElementById('mascot-fixed');
-                // No need to create new Image if it's already in DOM, just check its `complete` status
                 if (mascotImg.complete) {
                     this.mascotLoaded = true;
                     this.checkAllAssetsLoaded();
@@ -781,27 +780,23 @@
                     for (const key in ORIGINAL_IMAGE_DEFINITIONS) {
                         OBJECT_TYPES[key].img = this.imagesLoadedMap[key];
                     }
-                    this.loadingOverlay.classList.add('hidden');
-                    this.gameWrapper.style.display = 'block'; // Show game wrapper
                     this.postLoadSetup();
                 }
             }
 
             postLoadSetup() {
+                this.loadingOverlay.classList.add('hidden'); // Hide loading overlay
+                this.gameWrapper.style.display = 'block'; // Show game wrapper FIRST
+                
+                this.resizeCanvas(); // Now resize canvas when it's visible and gets correct clientWidth
+
                 this.score = 0;
                 this.currentLevelIndex = 0;
                 this.scoreDisplay.textContent = this.score;
-                this.gameMessage.textContent = '點擊開始按鈕，捕捉雙溪美景！';
-                this.startButton.textContent = '開始挑戰';
-                this.startButton.onclick = () => this.startGame(); 
-                this.gameOverlay.classList.remove('hidden'); 
-                this.scoreBreakdownElement.classList.add('hidden'); // Hide breakdown
-                this.gameState = 'ready';
-                this.objectsAreFrozen = false; 
-                this.highlightEffect = null; 
-                this.clearScreen();
-                this.updateMissionDisplay(LEVELS[this.currentLevelIndex]);
-                this.updateInstructionsForbiddenList(); // Update instructions with initial forbidden items
+
+                this.clearScreen(); // Clear canvas before setting up ready screen
+                this.setupReadyScreen(); // NEW: Setup objects and UI for the ready screen
+                this.updateInstructionsForbiddenList(); 
                 
                 // Start the game loop after everything is loaded and set up
                 if (!this.animationFrameId) {
@@ -942,12 +937,66 @@
             }
 
             // --- Game Logic ---
+            // Sets up the initial screen with objects for the first level, but doesn't start the game.
+            setupReadyScreen() {
+                this.currentLevelIndex = 0; // Ensure we are looking at level 1 for the ready screen
+                const level = LEVELS[this.currentLevelIndex];
+                
+                this.gameObjects = []; // Clear any previous objects
+                this.timeLeft = level.duration; // Display initial duration
+                this.timerDisplay.textContent = this.timeLeft.toFixed(1);
+                
+                // 1. Add required and forbidden items
+                const initialObjectIds = new Set();
+                [...level.required, ...level.forbidden].forEach(id => {
+                    if (OBJECT_TYPES[id] && OBJECT_TYPES[id].img && !initialObjectIds.has(id)) { 
+                        this.gameObjects.push(new GameObject(id, this.canvasWidth, this.canvasHeight));
+                        initialObjectIds.add(id);
+                    } else if (!OBJECT_TYPES[id] || !OBJECT_TYPES[id].img) {
+                        console.warn(`Required/Forbidden item ${id} has no valid image.`);
+                    }
+                });
+
+                // 2. Add bonus items with a chance
+                if (Math.random() < level.bonusItemChance && OBJECT_TYPES['XIANG_WANG_LAI_FU'] && OBJECT_TYPES['XIANG_WANG_LAI_FU'].img) {
+                    if (!initialObjectIds.has('XIANG_WANG_LAI_FU')) { 
+                        this.gameObjects.push(new GameObject('XIANG_WANG_LAI_FU', this.canvasWidth, this.canvasHeight));
+                        initialObjectIds.add('XIANG_WANG_LAI_FU');
+                    }
+                }
+
+                // 3. Fill remaining slots with other random objects (filler items)
+                const fillerCount = level.objectCount - this.gameObjects.length;
+                for (let i = 0; i < fillerCount; i++) {
+                    const randomFillerTypeId = this.getRandomFillerItem(level);
+                    if (randomFillerTypeId) { 
+                         this.gameObjects.push(new GameObject(randomFillerTypeId, this.canvasWidth, this.canvasHeight));
+                    }
+                }
+                
+                this.gameObjects = this.gameObjects.filter(obj => obj.img !== null); // Filter out any objects whose images failed to load
+
+                this.updateMissionDisplay(level);
+                this.levelDisplay.textContent = this.currentLevelIndex + 1;
+                this.levelNameDisplay.textContent = `限時 ${level.duration} 秒，拍到一次即可晉級！`; // Ensure level name is correctly reset
+
+                this.gameMessage.textContent = '點擊開始按鈕，捕捉雙溪美景！';
+                this.startButton.textContent = '開始挑戰';
+                this.startButton.onclick = () => this.startGame(); 
+                this.gameOverlay.classList.remove('hidden'); 
+                this.scoreBreakdownElement.classList.add('hidden'); // Hide breakdown
+                
+                this.gameState = 'ready'; // Set state to ready
+                this.objectsAreFrozen = true; // Objects should be frozen when in 'ready' state
+                this.highlightEffect = null; 
+            }
+
             startGame() {
                 this.ensureBackgroundMusicPlays(); 
                 this.currentLevelIndex = 0; 
                 this.score = 0; // Reset total score for a new game
                 this.scoreDisplay.textContent = this.score;
-                this.initLevel(this.currentLevelIndex);
+                this.initLevel(this.currentLevelIndex); // This now fully initializes and starts the first level
             }
 
             resumeCapturing() {
@@ -957,7 +1006,8 @@
                 this.gameMessage.textContent = `關卡 ${this.currentLevelIndex + 1}: ${LEVELS[this.currentLevelIndex].name} - 倒數繼續!`; 
                 this.highlightEffect = null; 
                 this.scoreBreakdownElement.classList.add('hidden'); // Hide breakdown
-                this.gameStartTime = performance.now() - (LEVELS[this.currentLevelIndex].duration - this.timeLeft) * 1000; // Adjust start time to resume countdown
+                // Adjust start time to resume countdown from where it was paused
+                this.gameStartTime = performance.now() - (LEVELS[this.currentLevelIndex].duration - this.timeLeft) * 1000; 
             }
 
             initLevel(levelIndex) {
@@ -1020,7 +1070,7 @@
                 this.scoreBreakdownElement.classList.add('hidden'); // Hide breakdown for new level
                 
                 this.gameState = 'playing';
-                this.objectsAreFrozen = false; 
+                this.objectsAreFrozen = false; // Unfreeze objects for actual play
                 this.highlightEffect = null; 
                 this.gameStartTime = performance.now(); // Reset timer
             }
@@ -1244,6 +1294,8 @@
             // --- Drawing and Animation Loop ---
             clearScreen() {
                 this.ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+                this.ctx.fillStyle = '#3a005f'; // Match the darker part of the canvas-container gradient
+                this.ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
             }
 
             updateGameTime(currentTime) {
@@ -1278,7 +1330,8 @@
                     obj.update(speedMultiplier); 
                     obj.draw();
                     
-                    if (!this.objectsAreFrozen && obj.isOffScreen()) { 
+                    // Only respawn objects if game is playing and objects are not frozen
+                    if (this.gameState === 'playing' && !this.objectsAreFrozen && obj.isOffScreen()) { 
                         this.gameObjects.splice(i, 1);
                         const newFillerItem = this.getRandomFillerItem(level);
                         if (newFillerItem) {
